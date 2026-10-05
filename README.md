@@ -31,7 +31,8 @@ The locker is private to its renter. Teammates can't open it.
 1. Copy `PublicLockers.cs` into your server's `oxide/plugins/` (or `carbon/plugins/`) folder.
 2. The plugin compiles and loads automatically and writes `oxide/config/PublicLockers.json`.
 3. Go to each monument that should have one, look at a locker that is part of the
-   monument, and run `/locker add`.
+   monument, and run `/locker add`. Where a monument has no lockers of its own, stand where
+   one should go, face the way its doors should open from, and run `/locker place`.
 
 ## Commands
 
@@ -40,7 +41,8 @@ The locker is private to its renter. Teammates can't open it.
 | `/locker` | everyone | How long your locker is paid for, and where to pay |
 | `/locker rent [days]` | everyone | Pay rent in scrap at a terminal (only when Public Works is not loaded) |
 | `/locker add` | admin | Mark the monument locker you are looking at (within 5 m) as a terminal |
-| `/locker remove` | admin | Unmark the nearest terminal (within 5 m) |
+| `/locker place` | admin | Spawn a locker where you stand, facing you, for monuments that have none |
+| `/locker remove` | admin | Remove the nearest terminal, marked or placed (within 5 m) |
 | `/locker list` | admin | List the marked spots, and outline the nearby ones for a few seconds |
 | `/locker grant <player> <days>` | admin | Add rent to a player's locker for free |
 
@@ -72,6 +74,7 @@ oxide.grant group admin publiclockers.admin
   "Distance from a terminal that counts as standing at it (meters)": 4.0,
   "Reach when using a terminal (meters)": 3.0,
   "How close to the marked spot the player must be looking (meters)": 1.0,
+  "Prefab for lockers spawned with /locker place": "assets/prefabs/deployable/locker/locker.deployed.prefab",
   "Terminals (marked with /locker add)": []
 }
 ```
@@ -83,6 +86,10 @@ Notes:
   monument is stored relative to it, so it survives map wipes and applies to every copy of
   that monument (every gas station, say). A spot outside any monument is a fixed world
   position and will not survive a map wipe.
+- **Placed lockers** (`/locker place`) are for monuments with no lockers. The plugin spawns
+  one at the spot, facing the way you were standing; it can't be damaged or picked up, is
+  never written to the world save, and is respawned on every load. Players open it like any
+  container and get their own locker. Like marks, it stands at every copy of the monument.
 - **Barred items** — nothing is refused by default. List shortnames (for example
   `explosive.timed`) to keep them out of lockers.
 - **Lowering the slot count** never removes items: a locker opens large enough for what is

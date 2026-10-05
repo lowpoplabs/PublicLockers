@@ -7,7 +7,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("Public Lockers", "LowPopLabs", "0.1.0")]
+    [Info("Public Lockers", "LowPopLabs", "0.2.0")]
     [Description("Rent a personal locker by the day and open it from a terminal at any monument: what goes in at one terminal is there at every other. Rent is paid at the Public Works office, or in scrap at the terminal when that plugin is not installed.")]
     public class PublicLockers : RustPlugin
     {
@@ -67,16 +67,20 @@ namespace Oxide.Plugins
                 ["Store.Barred"] = "{0} can't be kept in a locker.",
                 ["Wiped"] = "Your locker went unpaid past the grace period and its contents were destroyed.",
 
-                ["Admin.Usage"] = "/locker add · remove · list · grant <player> <days>",
+                ["Admin.Usage"] = "/locker add · place · remove · list · grant <player> <days>",
                 ["Admin.Added"] = "Locker marked as a terminal at {0}. It applies to {1} copy(ies) of that monument on this map.",
                 ["Admin.AddedWorld"] = "Terminal marked. It is not inside a monument, so it will not survive a map wipe.",
                 ["Admin.LookAt"] = "Look at the locker you want to mark, from within 5 m, and run /locker add again.",
                 ["Admin.AlreadyMarked"] = "That spot is already a terminal.",
+                ["Admin.Placed"] = "Locker placed at {0}. It stands at {1} copy(ies) of that monument on this map.",
+                ["Admin.PlacedWorld"] = "Locker placed. It is not inside a monument, so it will not survive a map wipe.",
+                ["Admin.KindPlaced"] = "spawned locker",
+                ["Admin.KindMarked"] = "marked spot",
                 ["Admin.Removed"] = "Terminal removed ({0}).",
                 ["Admin.NoneNear"] = "No terminal within {0} m.",
-                ["Admin.ListHeader"] = "{0} marked spot(s), {1} terminal(s) in use on this map:",
-                ["Admin.ListLine"] = "  {0} @ {1}",
-                ["Admin.ListNone"] = "No terminals marked. Look at a locker in a monument and run /locker add.",
+                ["Admin.ListHeader"] = "{0} spot(s), {1} terminal(s) in use on this map:",
+                ["Admin.ListLine"] = "  {0} @ {1} ({2})",
+                ["Admin.ListNone"] = "No terminals yet. Look at a locker in a monument and run /locker add, or stand where one should go and run /locker place.",
                 ["Admin.NoPlayer"] = "No player found for '{0}'.",
                 ["Admin.Granted"] = "{0} now has {1} of locker rent.",
 
@@ -90,7 +94,7 @@ namespace Oxide.Plugins
                 ["Help.NoLocations"] = "No locker terminals are in service yet.",
                 ["Help.Cmd.Status"] = "How long your locker is paid for",
                 ["Help.Cmd.Rent"] = "Pay rent in scrap at a terminal (servers without a Public Works office)",
-                ["Help.Cmd.Admin"] = "Admin: mark, remove and list terminals; grant rent",
+                ["Help.Cmd.Admin"] = "Admin: mark or place, remove and list terminals; grant rent",
             }, this);
         }
 
@@ -131,6 +135,12 @@ namespace Oxide.Plugins
 
             [JsonProperty("Position (relative to the monument)")]
             public string Position = "";
+
+            [JsonProperty("Spawn a locker here (false = a marked spot on the monument's own scenery)")]
+            public bool Placed = false;
+
+            [JsonProperty("Rotation Y of the spawned locker (relative to the monument)")]
+            public float RotationY;
         }
 
         private class Configuration
@@ -170,6 +180,9 @@ namespace Oxide.Plugins
 
             [JsonProperty("How close to the marked spot the player must be looking (meters)")]
             public float MarkRadius = 1f;
+
+            [JsonProperty("Prefab for lockers spawned with /locker place")]
+            public string PlacedPrefab = "assets/prefabs/deployable/locker/locker.deployed.prefab";
 
             [JsonProperty("Terminals (marked with /locker add)", ObjectCreationHandling = ObjectCreationHandling.Replace)]
             public List<TerminalSpot> Terminals = new List<TerminalSpot>();
@@ -427,7 +440,9 @@ namespace Oxide.Plugins
             permission.RegisterPermission(PermAdmin, this);
             permission.RegisterPermission(PermUse, this);
             LoadData();
-            Unsubscribe(nameof(OnPlayerInput));   // only listened to while terminals exist
+            Unsubscribe(nameof(OnPlayerInput));   // only listened to while marked spots exist
+            Unsubscribe(nameof(CanLootEntity));   // only while spawned lockers exist
+            Unsubscribe(nameof(OnLockerSwap));
             Puts($"PublicLockers v{Version} loaded - by LowPopLabs - ko-fi.com/lowpoplabs");
         }
 
@@ -446,6 +461,10 @@ namespace Oxide.Plugins
 
         private void OnServerInitialized()
         {
+            immortal = ScriptableObject.CreateInstance<ProtectionProperties>();
+            immortal.name = "PublicLockersTerminalProtection";
+            immortal.Add(1f);
+
             ResolveTerminals();
             ExpireAll();
             expireTimer = timer.Every(600f, ExpireAll);
@@ -462,11 +481,30 @@ namespace Oxide.Plugins
             foreach (var userId in new List<ulong>(sessions.Keys))
                 CloseSession(userId, false);
             SaveData();
+            KillPlaced();
+            if (immortal != null) UnityEngine.Object.Destroy(immortal);
             if (OfficeOpen) PublicWorks.Call("UnregisterBillable", this, BillKey);
         }
 
-        // A terminal is a locker that is part of the monument itself: scenery, not an
-        // entity, so the use key is read directly and matched against the marked spots.
+        // A spawned locker is only a door: using one opens the player's own locker instead.
+        private object CanLootEntity(BasePlayer player, StorageContainer container)
+        {
+            if (container == null || container.net == null || !placedIds.Contains(container.net.ID.Value)) return null;
+            Vector3 position = container.transform.position;
+            NextTick(() => UseTerminal(player, position));
+            return false;
+        }
+
+        // The gear-swap buttons are never shown (the loot panel never opens), but refuse
+        // the call anyway so nothing can be pushed into a spawned locker's own inventory.
+        private object OnLockerSwap(Locker locker, int set, BasePlayer player)
+        {
+            if (locker == null || locker.net == null || !placedIds.Contains(locker.net.ID.Value)) return null;
+            return false;
+        }
+
+        // A marked terminal is a locker that is part of the monument itself: scenery, not
+        // an entity, so the use key is read directly and matched against the marked spots.
         private void OnPlayerInput(BasePlayer player, InputState input)
         {
             if (input == null || !input.WasJustPressed(BUTTON.USE)) return;
@@ -487,7 +525,7 @@ namespace Oxide.Plugins
             if (hit.GetEntity() != null) return;
 
             var terminal = NearestTerminal(hit.point, Mathf.Max(0.2f, config.MarkRadius));
-            if (terminal != null) UseTerminal(player, terminal.Position);
+            if (terminal != null && terminal.Entity == null) UseTerminal(player, terminal.Position);
         }
 
         private void OnPlayerDisconnected(BasePlayer player)
@@ -513,15 +551,19 @@ namespace Oxide.Plugins
 
         #region Terminals
 
-        // A marked spot resolved to a world position on this map.
+        // A spot resolved to a world position on this map. Entity is the locker the
+        // plugin spawned there, or null for a spot marked on the monument's own scenery.
         private class LiveTerminal
         {
             public TerminalSpot Spot;
             public Vector3 Position;
             public string Place;   // monument name as the map shows it, for the help page
+            public StorageContainer Entity;
         }
 
         private readonly List<LiveTerminal> terminals = new List<LiveTerminal>();
+        private readonly HashSet<ulong> placedIds = new HashSet<ulong>();
+        private ProtectionProperties immortal;
 
         // Some monuments (the lighthouse, for one) ship with zero-size bounds, so nothing
         // is ever "inside" them. A point that is in no monument's bounds belongs to the
@@ -562,7 +604,7 @@ namespace Oxide.Plugins
 
         // Store the spot relative to the containing monument so it survives map wipes
         // (the same monument gets a new world position each map).
-        private TerminalSpot CaptureSpot(Vector3 world)
+        private TerminalSpot CaptureSpot(Vector3 world, float worldYaw = 0f)
         {
             var spot = new TerminalSpot();
             MonumentInfo monument = FindMonumentAt(world);
@@ -570,9 +612,13 @@ namespace Oxide.Plugins
             {
                 spot.Monument = monument.name;
                 spot.Position = FormatPosition(monument.transform.InverseTransformPoint(world));
+                spot.RotationY = Mathf.Repeat(worldYaw - monument.transform.eulerAngles.y, 360f);
             }
             else
+            {
                 spot.Position = FormatPosition(world);
+                spot.RotationY = Mathf.Repeat(worldYaw, 360f);
+            }
             return spot;
         }
 
@@ -604,8 +650,8 @@ namespace Oxide.Plugins
 
             if (string.IsNullOrEmpty(spot.Monument))
             {
-                terminals.Add(new LiveTerminal { Spot = spot, Position = stored, Place = PlaceName(FindMonumentAt(stored), null) });
-                PrintWarning($"Terminal at {spot.Position} ({MapHelper.PositionToString(stored)}) is a fixed world position and will not survive a map wipe. Remove it and mark it again with /locker add to tie it to its monument.");
+                AddTerminal(spot, stored, spot.RotationY, PlaceName(FindMonumentAt(stored), null));
+                PrintWarning($"Terminal at {spot.Position} ({MapHelper.PositionToString(stored)}) is a fixed world position and will not survive a map wipe. Remove it and add it again to tie it to its monument.");
                 return 1;
             }
 
@@ -613,19 +659,65 @@ namespace Oxide.Plugins
             if (anchors.Count == 0)
                 PrintWarning($"Terminal monument '{spot.Monument}' is not on this map — that terminal is out of use.");
             foreach (var anchor in anchors)
-                terminals.Add(new LiveTerminal { Spot = spot, Position = anchor.transform.TransformPoint(stored), Place = PlaceName(anchor, spot.Monument) });
+                AddTerminal(spot, anchor.transform.TransformPoint(stored), anchor.transform.eulerAngles.y + spot.RotationY, PlaceName(anchor, spot.Monument));
             return anchors.Count;
+        }
+
+        private void AddTerminal(TerminalSpot spot, Vector3 position, float yaw, string place)
+        {
+            var terminal = new LiveTerminal { Spot = spot, Position = position, Place = place };
+            if (spot.Placed) terminal.Entity = SpawnPlaced(position, yaw);
+            terminals.Add(terminal);
+        }
+
+        // The locker for a monument that has none of its own. Never saved, so it is
+        // respawned on every load and gone on unload.
+        private StorageContainer SpawnPlaced(Vector3 position, float yaw)
+        {
+            var entity = GameManager.server.CreateEntity(config.PlacedPrefab, position, Quaternion.Euler(0f, yaw, 0f));
+            var locker = entity as StorageContainer;
+            if (locker == null)
+            {
+                PrintWarning($"'{config.PlacedPrefab}' is not a storage container — no locker spawned. The spot still works with the use key.");
+                if (entity != null) UnityEngine.Object.Destroy(entity.gameObject);
+                return null;
+            }
+
+            locker.enableSaving = false;
+            UnityEngine.Object.DestroyImmediate(locker.GetComponent<DestroyOnGroundMissing>());
+            UnityEngine.Object.DestroyImmediate(locker.GetComponent<GroundWatch>());
+            locker.Spawn();
+
+            locker.baseProtection = immortal;
+            locker.pickup.enabled = false;
+            locker.dropsLoot = false;
+            placedIds.Add(locker.net.ID.Value);
+            return locker;
+        }
+
+        private static void KillEntity(LiveTerminal terminal)
+        {
+            if (terminal.Entity != null && !terminal.Entity.IsDestroyed) terminal.Entity.Kill();
+            terminal.Entity = null;
+        }
+
+        private void KillPlaced()
+        {
+            foreach (var terminal in terminals)
+                KillEntity(terminal);
+            placedIds.Clear();
         }
 
         private void ResolveTerminals()
         {
+            KillPlaced();
             terminals.Clear();
             foreach (var spot in config.Terminals)
                 ResolveSpot(spot);
             if (config.Terminals.Count == 0)
-                PrintWarning("No locker terminals marked yet — an admin should look at a locker in a monument and run /locker add");
+                PrintWarning("No locker terminals yet — an admin should look at a locker in a monument and run /locker add, or stand where one should go and run /locker place");
             else
-                Puts($"{terminals.Count} locker terminal(s) in use from {config.Terminals.Count} marked spot(s).");
+                Puts($"{terminals.Count} locker terminal(s) in use from {config.Terminals.Count} spot(s), {placedIds.Count} of them spawned lockers.");
             WatchInput();
         }
 
@@ -647,8 +739,22 @@ namespace Oxide.Plugins
 
         private void WatchInput()
         {
-            if (terminals.Count > 0) Subscribe(nameof(OnPlayerInput));
+            bool marks = false;
+            foreach (var terminal in terminals)
+                if (terminal.Entity == null) { marks = true; break; }   // a failed spawn falls back to the use key
+            if (marks) Subscribe(nameof(OnPlayerInput));
             else Unsubscribe(nameof(OnPlayerInput));
+
+            if (placedIds.Count > 0)
+            {
+                Subscribe(nameof(CanLootEntity));
+                Subscribe(nameof(OnLockerSwap));
+            }
+            else
+            {
+                Unsubscribe(nameof(CanLootEntity));
+                Unsubscribe(nameof(OnLockerSwap));
+            }
         }
 
         private LiveTerminal NearestTerminal(Vector3 position, float range)
@@ -1056,6 +1162,26 @@ namespace Oxide.Plugins
                     else ReplyRaw(player, "Admin.Added", ShortMonument(spot.Monument), copies);
                     return;
                 }
+                case "place":
+                {
+                    Vector3 here = player.transform.position;
+                    if (NearestTerminal(here, 1f) != null)
+                    {
+                        ReplyRaw(player, "Admin.AlreadyMarked");
+                        return;
+                    }
+                    // the locker stands where the admin stands, its doors facing where they look from
+                    var spot = CaptureSpot(here, player.eyes.rotation.eulerAngles.y + 180f);
+                    spot.Placed = true;
+                    config.Terminals.Add(spot);
+                    SaveConfig();
+                    int copies = ResolveSpot(spot);
+                    WatchInput();
+                    RefreshHelp();
+                    if (string.IsNullOrEmpty(spot.Monument)) ReplyRaw(player, "Admin.PlacedWorld");
+                    else ReplyRaw(player, "Admin.Placed", ShortMonument(spot.Monument), copies);
+                    return;
+                }
                 case "remove":
                 {
                     const float range = 5f;
@@ -1064,6 +1190,12 @@ namespace Oxide.Plugins
                     var spot = nearest.Spot;
                     config.Terminals.Remove(spot);
                     SaveConfig();
+                    foreach (var terminal in terminals)
+                    {
+                        if (terminal.Spot != spot || terminal.Entity == null) continue;
+                        if (terminal.Entity.net != null) placedIds.Remove(terminal.Entity.net.ID.Value);
+                        KillEntity(terminal);
+                    }
                     terminals.RemoveAll(t => t.Spot == spot);
                     WatchInput();
                     RefreshHelp();
@@ -1075,7 +1207,8 @@ namespace Oxide.Plugins
                     if (config.Terminals.Count == 0) { ReplyRaw(player, "Admin.ListNone"); return; }
                     ReplyRaw(player, "Admin.ListHeader", config.Terminals.Count, terminals.Count);
                     foreach (var spot in config.Terminals)
-                        ReplyRaw(player, "Admin.ListLine", string.IsNullOrEmpty(spot.Monument) ? "world" : ShortMonument(spot.Monument), spot.Position);
+                        ReplyRaw(player, "Admin.ListLine", string.IsNullOrEmpty(spot.Monument) ? "world" : ShortMonument(spot.Monument), spot.Position,
+                            Msg(spot.Placed ? "Admin.KindPlaced" : "Admin.KindMarked", player.UserIDString));
                     ShowMarks(player);
                     return;
                 }
@@ -1144,7 +1277,7 @@ namespace Oxide.Plugins
         {
             if (!player.IsAdmin) return;
             foreach (var terminal in terminals)
-                if ((terminal.Position - player.transform.position).sqrMagnitude < 50f * 50f)
+                if (terminal.Entity == null && (terminal.Position - player.transform.position).sqrMagnitude < 50f * 50f)
                     player.SendConsoleCommand("ddraw.sphere", 15f, Color.green, terminal.Position, Mathf.Max(0.2f, config.MarkRadius));
         }
 
@@ -1167,7 +1300,7 @@ namespace Oxide.Plugins
             {
                 HelpCommand("/locker", "", Msg("Help.Cmd.Status", null), ""),
                 HelpCommand("/locker", "rent [days]", Msg("Help.Cmd.Rent", null), ""),
-                HelpCommand("/locker", "add | remove | list | grant <player> <days>", Msg("Help.Cmd.Admin", null), PermAdmin),
+                HelpCommand("/locker", "add | place | remove | list | grant <player> <days>", Msg("Help.Cmd.Admin", null), PermAdmin),
             };
             var notes = new List<string>(Msg("Help.Notes", null).Split('\n'));
             AddLocationNotes(notes);

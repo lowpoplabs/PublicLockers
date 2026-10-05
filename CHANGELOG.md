@@ -4,6 +4,14 @@ All notable changes to the Public Lockers plugin.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0] — 2026-10-05
+
+### Added
+- **Placed lockers** — `/locker place` spawns a locker terminal where the admin stands, for
+  monuments that have no lockers of their own. It is stored relative to the monument like a
+  marked spot, can't be damaged or picked up, and is never written to the world save.
+- `/locker list` says whether each spot is a marked spot or a spawned locker.
+
 ## [0.1.0] — 2026-10-04
 
 First release. Playtested on a live server.
