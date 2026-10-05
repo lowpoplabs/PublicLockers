@@ -12,7 +12,7 @@ that plugin is installed, so the island keeps a single payment desk. Without it,
 plugin takes scrap at the terminal and works on its own.
 
 <!-- lpl:links -->
-**[Download v0.1.0](https://github.com/lowpoplabs/PublicLockers/releases/latest)** · **Flyer:** [web](https://lowpoplabs.github.io/flyers/PublicLockers.html) / [PDF](PublicLockers-Flyer.pdf) · **[Changelog](CHANGELOG.md)** · **[Ko-fi](https://ko-fi.com/lowpoplabs)**
+**[Download v0.2.0](https://github.com/lowpoplabs/PublicLockers/releases/latest)** · **Flyer:** [web](https://lowpoplabs.github.io/flyers/PublicLockers.html) / [PDF](PublicLockers-Flyer.pdf) · **[Changelog](CHANGELOG.md)** · **[Ko-fi](https://ko-fi.com/lowpoplabs)**
 <!-- /lpl:links -->
 
 ## How to use (in-game)
